@@ -23,7 +23,6 @@ def command_start(update: Update, context: CallbackContext) -> None:
     update.message.reply_text(text=text,
                               reply_markup=make_keyboard_for_start_command())
 
-
 def secret_level(update: Update, context: CallbackContext) -> None:
     # callback_data: SECRET_LEVEL_BUTTON variable from manage_data.py
     """ Pressed 'secret_level_button_text' after /start command"""
@@ -40,33 +39,27 @@ def secret_level(update: Update, context: CallbackContext) -> None:
         parse_mode=ParseMode.HTML
     )
     
+from tgbot.models import Post
 def inlinequery(update: Update, context: CallbackContext) -> None:
     """Handle the inline query."""
     query = update.inline_query.query
 
-    if query == "":
-        return
+    posts = Post.objects.all()
 
     results = [
-        InlineQueryResultArticle(
+        
+    ]
+    
+    for post in posts:
+        print(f"\n\n{post.thumbnail}\n\n")
+        results.append(
+            InlineQueryResultArticle(
             id=str(uuid4()),
             title="Caps",
             input_message_content=InputTextMessageContent(query.upper()),
+            thumb_url=f"{post.thumbnail}"
         ),
-        InlineQueryResultArticle(
-            id=str(uuid4()),
-            title="Bold",
-            input_message_content=InputTextMessageContent(
-                f"*{escape_markdown(query)}*", parse_mode=ParseMode.MARKDOWN
-            ),
-        ),
-        InlineQueryResultArticle(
-            id=str(uuid4()),
-            title="Italic",
-            input_message_content=InputTextMessageContent(
-                f"_{escape_markdown(query)}_", parse_mode=ParseMode.MARKDOWN
-            ),
-        ),
-    ]
+        
+        )
 
     update.inline_query.answer(results)

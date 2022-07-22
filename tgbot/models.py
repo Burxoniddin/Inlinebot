@@ -97,5 +97,5 @@ class Location(CreateTracker):
 
 class Post(CreateTracker):
     title = models.CharField(max_length=200)
-    content = models.TextField()
-    image = models.ImageField(null = True)
+    thumbnail = models.URLField()
+    image = models.URLField()
