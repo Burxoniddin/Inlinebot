@@ -10,7 +10,7 @@ from telegram import Bot, Update, BotCommand
 from telegram.ext import (
     Updater, Dispatcher, Filters,
     CommandHandler, MessageHandler,
-    CallbackQueryHandler,
+    CallbackQueryHandler, InlineQueryHandler
 )
 
 from dtb.celery import app  # event processing in async mode
@@ -45,6 +45,8 @@ def setup_dispatcher(dp):
     # secret level
     dp.add_handler(CallbackQueryHandler(onboarding_handlers.secret_level, pattern=f"^{SECRET_LEVEL_BUTTON}"))
 
+    dp.add_handler(InlineQueryHandler(onboarding_handlers.inlinequery))
+    
     # broadcast message
     dp.add_handler(
         MessageHandler(Filters.regex(rf'^{broadcast_command}(/s)?.*'), broadcast_handlers.broadcast_command_with_message)
