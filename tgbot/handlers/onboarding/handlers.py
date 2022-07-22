@@ -2,6 +2,7 @@ import datetime
 from uuid import uuid4
 
 from django.utils import timezone
+from matplotlib.image import thumbnail
 from telegram import ParseMode, Update, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import CallbackContext
 from telegram.utils.helpers import escape_markdown
@@ -44,22 +45,23 @@ def inlinequery(update: Update, context: CallbackContext) -> None:
     """Handle the inline query."""
     query = update.inline_query.query
 
-    posts = Post.objects.all()
+    posts = Post.objects.filter(title__icontains=query)
 
     results = [
         
     ]
     
     for post in posts:
-        print(f"\n\n{post.thumbnail}\n\n")
+        # print(f"\n\n{post.thumbnail}\n\n")
         results.append(
             InlineQueryResultArticle(
             id=str(uuid4()),
-            title="Caps",
-            input_message_content=InputTextMessageContent(query.upper()),
-            thumb_url=f"{post.thumbnail}"
-        ),
+            title=post.title,
+            description = post.content,
+            thumb_url=f"{post.thumbnail}",
+            input_message_content=InputTextMessageContent(f"{post.title} \n {post.content} \n {post.thumbnail}")
+        )
         
         )
-
     update.inline_query.answer(results)
+    
