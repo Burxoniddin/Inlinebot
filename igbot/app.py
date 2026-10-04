@@ -186,8 +186,8 @@ async def _check_public_url(settings: Settings, report) -> None:
             async with session.get(url) as response:
                 ok = response.status == 200
         report(ok, f"PUBLIC_BASE_URL ochiladi: {url}" if ok else f"PUBLIC_BASE_URL dan javob {response.status}: {url}")
-    except aiohttp.ClientError as exc:
-        report(False, f"PUBLIC_BASE_URL ga ulanib bo'lmadi: {exc}")
+    except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError) as exc:
+        report(False, f"PUBLIC_BASE_URL ga ulanib bo'lmadi: {str(exc) or type(exc).__name__}")
     finally:
         path.unlink(missing_ok=True)
         if runner is not None:

@@ -28,6 +28,8 @@ log = logging.getLogger(__name__)
 
 MAX_TOKENS = 16000
 MAX_TOOL_ROUNDS = 12
+# Every earlier photo is sent again on each request; start over well before request size/image limits.
+MAX_CONVERSATION_IMAGES = 40
 # drop_block: if a replayed thinking block ever fails the conversation check, the API drops it instead of
 # rejecting the request.
 BETAS = ["thinking-binding-controls-2026-08-01"]
@@ -36,6 +38,7 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 LOCAL_IMAGE = "local_image"  # stored placeholder for an uploaded photo, expanded to base64 per request
 TOO_LONG_NOTICE = "ℹ️ Suhbat juda uzun bo'lib ketdi, shuning uchun yangisi boshlandi (oldingi xabarlar unutildi)."
 TOO_MANY_STEPS = "Bu so'rov juda ko'p qadam talab qildi, shuning uchun to'xtadim. Iltimos, uni qismlarga bo'lib yozing."
+CUT_OFF = "Javob uzunlik chegarasiga yetib, kesilib qoldi. So'rovni soddaroq qilib qayta yozing."
 
 
 class AgentRefusal(Exception):
@@ -117,7 +120,8 @@ class Agent:
     async def add_note(self, chat_id: int, text: str) -> None:
         """Tell the agent about something that happened outside the chat (a button press, a scheduled post)."""
         async with self._lock(chat_id):
-            conversation, _ = self._conversation(chat_id)
+            # A conversation that is merely too long is replaced on the admin's next message, with a notice.
+            conversation, _ = self._conversation(chat_id, keep_long=True)
             self._append_notes(conversation, [text])
 
     async def respond(self, chat_id: int, content: list[dict[str, Any]]) -> AgentReply:
@@ -155,12 +159,20 @@ class Agent:
 
     # --- conversation lifecycle ----------------------------------------------------------
 
-    def _conversation(self, chat_id: int) -> tuple[Conversation, str | None]:
+    def _conversation(self, chat_id: int, *, keep_long: bool = False) -> tuple[Conversation, str | None]:
         current = self.storage.get_conversation(chat_id)
         notice = None
         if current is not None and current.fingerprint == self.fingerprint:
             idle = utcnow() - current.updated_at > timedelta(hours=self.settings.conversation_idle_hours)
-            if current.context_tokens > self.settings.max_context_tokens:
+            images = sum(
+                1
+                for message in current.messages
+                if isinstance(message["content"], list)
+                for block in message["content"]
+                if block.get("type") == LOCAL_IMAGE
+            )
+            too_long = current.context_tokens > self.settings.max_context_tokens or images >= MAX_CONVERSATION_IMAGES
+            if too_long and not keep_long:
                 notice = TOO_LONG_NOTICE
             elif not idle:
                 return current, None
@@ -188,15 +200,17 @@ class Agent:
                 raise AgentRefusal(getattr(response.stop_details, "category", None) or "refusal")
             content = assistant_content(response.content)
             tool_uses = [block for block in content if block.get("type") == "tool_use"]
+            cut_off = response.stop_reason == "max_tokens"
             if not tool_uses:
                 text = "\n\n".join(
                     block["text"].strip() for block in content if block.get("type") == "text" and block["text"].strip()
                 )
                 if text:  # a reply with no text at all isn't kept: an empty assistant turn can't be sent back
                     messages.append({"role": "assistant", "content": content})
+                if cut_off:
+                    return (f"{text}\n\n({CUT_OFF})" if text else CUT_OFF), context_tokens
                 return text or "✅", context_tokens
             messages.append({"role": "assistant", "content": content})
-            cut_off = response.stop_reason == "max_tokens"
             results = []
             for block in tool_uses:
                 if cut_off:  # the call's input may be incomplete: don't run it

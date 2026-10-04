@@ -7,11 +7,13 @@ import logging
 from datetime import datetime, timedelta
 from typing import Awaitable, Callable
 
-from .actions import ActionService, PostSpec
+from .actions import REQUEST_TTL, ActionService, PostSpec
 from .config import Settings
 from .storage import Storage, utcnow
 
 log = logging.getLogger(__name__)
+
+STRAY_FILE_AGE = timedelta(days=1)  # far longer than any download or publish takes
 
 # notify(chat_id, message for the admin, note for the agent)
 Notify = Callable[[int, str, str], Awaitable[None]]
@@ -78,11 +80,13 @@ class Scheduler:
         return published
 
     def cleanup_media(self, now: datetime | None = None) -> int:
-        """Delete uploads older than MEDIA_RETENTION_DAYS that no scheduled post or pending request needs."""
-        cutoff = (now or utcnow()) - timedelta(days=self.settings.media_retention_days)
+        """Delete uploads older than MEDIA_RETENTION_DAYS that no scheduled post or pending request needs.
+        Requests nobody answered within REQUEST_TTL expire first, so they don't keep their media forever."""
+        now = now or utcnow()
+        self.storage.expire_pending_actions(now - REQUEST_TTL)
         in_use = self.storage.media_ids_in_use()
         removed = 0
-        for record in self.storage.media_created_before(cutoff):
+        for record in self.storage.media_created_before(now - timedelta(days=self.settings.media_retention_days)):
             if record.id in in_use:
                 continue
             (self.settings.media_dir / record.filename).unlink(missing_ok=True)
@@ -90,4 +94,19 @@ class Scheduler:
                 (self.settings.preview_dir / record.preview_filename).unlink(missing_ok=True)
             self.storage.delete_media(record.id)
             removed += 1
+        self._remove_strays(now)
         return removed
+
+    def _remove_strays(self, now: datetime) -> None:
+        """Files without a database row: padded copies and partial downloads left behind by a crash."""
+        known = self.storage.media_filenames()
+        cutoff = (now - STRAY_FILE_AGE).timestamp()
+        for directory in (self.settings.media_dir, self.settings.preview_dir):
+            for path in directory.iterdir():
+                if path.name in known:
+                    continue
+                try:
+                    if path.is_file() and path.stat().st_mtime < cutoff:
+                        path.unlink()
+                except FileNotFoundError:  # removed meanwhile by a publish finishing
+                    pass

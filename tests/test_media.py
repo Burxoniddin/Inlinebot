@@ -25,6 +25,19 @@ def test_wide_photo_is_padded_to_1_91() -> None:
     assert fitted.width == 2000
 
 
+@pytest.mark.parametrize(
+    "size",
+    [(1536, 2048), (2048, 900), (1080, 1359), (2048, 1066), (1081, 900), (1440, 2048), (2048, 2047), (900, 2048)],
+)
+def test_padded_photos_are_always_within_instagram_limits(size: tuple[int, int]) -> None:
+    """Rounding the canvas must never leave a ratio a hair outside 4:5-1.91:1 (Instagram rejects 0.7998)."""
+    image = Image.new("RGB", size)
+    for target in (media.clamp_feed_ratio(size[0] / size[1]), media.FEED_MIN_RATIO, media.FEED_MAX_RATIO, 1.0):
+        fitted = media.fit_to_ratio(image, target)
+        assert media.FEED_MIN_RATIO <= ratio(fitted) <= media.FEED_MAX_RATIO, (size, target, fitted.size)
+        assert fitted.width >= size[0] and fitted.height >= size[1]
+
+
 def test_photo_within_limits_is_unchanged() -> None:
     image = Image.new("RGB", (1080, 1350))
     assert media.fit_to_ratio(image, media.clamp_feed_ratio(ratio(image))) is image

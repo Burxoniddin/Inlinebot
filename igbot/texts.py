@@ -15,6 +15,7 @@ Instagramda biror narsa o'zgarishidan oldin (joylash, o'chirish, izohga javob) s
 
 Buyruqlar:
 /status — akkaunt holati va rejalashtirilgan postlar
+/pending — tasdiq kutayotgan so'rovlarni qayta ko'rsatish
 /new — yangi suhbat boshlash
 /help — yordam"""
 
@@ -34,6 +35,8 @@ AI_AUTH = "AI xizmatiga ulanib bo'lmadi: ANTHROPIC_API_KEY noto'g'ri yoki sozlan
 AI_BUSY = "AI xizmati hozir band. Bir daqiqadan keyin qayta urinib ko'ring."
 AI_UNREACHABLE = "AI xizmatiga ulanib bo'lmadi. Birozdan keyin qayta urinib ko'ring."
 AI_ERROR = "AI xizmati xatosi: {error}"
+AI_RESET = "AI so'rovni qabul qilmadi ({error}). Suhbatni yangidan boshladim — xabaringizni qayta yuboring."
+NO_PENDING = "Tasdiq kutayotgan so'rovlar yo'q."
 UNEXPECTED = "Kutilmagan xato yuz berdi. Qayta urinib ko'ring."
 CONFIRM = "✅ Tasdiqlash"
 DECLINE = "❌ Bekor qilish"

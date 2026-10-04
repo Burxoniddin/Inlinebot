@@ -130,7 +130,8 @@ python -m igbot             # botni ishga tushirish
 
 ## Foydalanish
 
-Buyruqlar: `/start` — yordam, `/status` — akkaunt holati va rejalar, `/new` — yangi suhbat.
+Buyruqlar: `/start` — yordam, `/status` — akkaunt holati va rejalar, `/pending` — tasdiq kutayotgan
+so'rovlarni qayta ko'rsatish, `/new` — yangi suhbat.
 Qolgan hamma narsani oddiy so'zlar bilan yozasiz:
 
 - (rasm bilan) «Shuni joyla, caption'ni o'zing yoz» · «Story qilib qo'y»
@@ -167,8 +168,8 @@ AI bilan suhbat 12 soat jim tursa yoki juda uzun bo'lib ketsa, yangi suhbat avto
 ## Xavfsizlik
 
 - Bot faqat `ADMIN_IDS` dagi foydalanuvchilarga javob beradi.
-- AI Instagramni o'zi o'zgartirmaydi: har bir amal admin ✅ bosgandan keyin bajariladi; so'rov 24 soatdan
-  keyin eskiradi.
+- AI Instagramni (va post rejalarini) o'zi o'zgartirmaydi: har bir amal admin ✅ bosgandan keyin
+  bajariladi; so'rov 24 soatdan keyin eskiradi.
 - Izohlardagi matn AI uchun buyruq emas, faqat ma'lumot sifatida qaraladi.
 - Media server faqat bot yaratgan tasodifiy nomli fayllarni beradi; baza va boshqa fayllar ochiq emas.
 - `.env` (tokenlar) hech qachon gitga qo'shilmasin.

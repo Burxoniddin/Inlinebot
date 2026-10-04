@@ -16,7 +16,7 @@ from .actions import ActionError, ActionService, PostSpec
 from .config import ConfigError, Settings
 from .instagram import InstagramClient, InstagramError
 from .media import MediaError
-from .storage import ActionRecord, Storage
+from .storage import ActionRecord, Storage, to_iso
 
 log = logging.getLogger(__name__)
 
@@ -110,7 +110,8 @@ TOOLS: list[dict[str, Any]] = [
     ),
     _tool(
         "cancel_scheduled_post",
-        "Cancel a scheduled post that has not been published yet. Takes effect immediately.",
+        "Cancel a scheduled post that has not been published yet. The result says whether it was done or is "
+        "waiting for the admin's confirmation.",
         {"schedule_id": {"type": "integer", "description": "Id from list_scheduled_posts."}},
     ),
     _tool(
@@ -323,9 +324,14 @@ class ToolBox:
         post = self.storage.get_scheduled_post(args["schedule_id"])
         if post is None:
             raise ActionError(f"Reja #{args['schedule_id']} topilmadi.")
-        if not self.storage.cancel_scheduled_post(post.id):
+        if post.status != "scheduled":
             raise ActionError(f"Reja #{post.id} ni bekor qilib bo'lmaydi (holati: {post.status}).")
-        return {"status": "cancelled", "schedule_id": post.id}
+        payload = {
+            "schedule_id": post.id,
+            "publish_at": to_iso(post.publish_at),
+            "caption": _shorten(post.spec.get("caption", ""), 200),
+        }
+        return await self._submit(self.actions.request(chat_id, "cancel_schedule", payload), created)
 
     async def _delete_post(self, chat_id: int, args: dict[str, Any], created: list[int]) -> Any:
         post = await self.ig.get_media(args["media_id"])  # also shows the admin which post it is

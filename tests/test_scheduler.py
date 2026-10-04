@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import timedelta
 
 from igbot.actions import ActionService
@@ -42,6 +43,23 @@ async def test_failures_are_reported(settings, storage, ig, add_media) -> None:
     failed = storage.get_scheduled_post(post.id)
     assert failed.status == "failed" and "token expired" in failed.error
     assert notes[0][1].startswith("❌")
+
+
+def test_unanswered_requests_expire_and_strays_are_swept(settings, storage, ig, add_media) -> None:
+    photo = add_media("image")
+    old_request = storage.create_action(CHAT, "publish", {"spec": {"post_type": "feed", "media_ids": [photo.id], "caption": ""}})
+    storage._execute("UPDATE actions SET created_at = ? WHERE id = ?", ("2000-01-01T00:00:00+00:00", old_request.id))
+    fresh_request = storage.create_action(CHAT, "delete_post", {"media_id": "m1"})
+    stray, fresh_stray = settings.media_dir / ("e" * 32 + ".jpg"), settings.media_dir / ("f" * 32 + ".part")
+    stray.write_bytes(b"left over")
+    fresh_stray.write_bytes(b"still downloading")
+    os.utime(stray, (0, 0))
+
+    make_scheduler(settings, storage, ig, []).cleanup_media()
+    assert storage.get_action(old_request.id).status == "expired"
+    assert storage.get_action(fresh_request.id).status == "pending"
+    assert not stray.exists() and fresh_stray.exists()
+    assert (settings.media_dir / photo.filename).exists()
 
 
 def test_old_uploads_are_removed_unless_needed(settings, storage, ig, add_media) -> None:

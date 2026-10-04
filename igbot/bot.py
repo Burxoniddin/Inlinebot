@@ -6,11 +6,12 @@ import asyncio
 import logging
 import secrets
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Awaitable, Callable
 
+import aiohttp
 import anthropic
 from aiogram import Bot, F, Router
-from aiogram.exceptions import TelegramAPIError
+from aiogram.exceptions import TelegramAPIError, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
 from aiogram.types import (
     CallbackQuery,
@@ -26,7 +27,7 @@ from aiogram.utils.chat_action import ChatActionSender
 
 from . import media as media_utils
 from . import texts
-from .actions import ActionService, PostSpec
+from .actions import REQUEST_TTL, ActionService, PostSpec
 from .agent import Agent, AgentRefusal, build_user_content
 from .config import Settings
 from .instagram import InstagramClient, InstagramError
@@ -35,6 +36,7 @@ from .storage import MediaRecord, Storage, utcnow
 log = logging.getLogger(__name__)
 
 TELEGRAM_DOWNLOAD_LIMIT = 20 * 1024 * 1024  # bots can't download bigger files
+DOWNLOAD_TIMEOUT = 180  # seconds; aiogram's default of 30 is short for a 20 MB video
 ALBUM_WAIT = 1.5  # seconds to wait for the rest of an album
 MESSAGE_LIMIT = 4096
 VIDEO_EXTENSIONS = {"video/mp4": ".mp4", "video/quicktime": ".mov"}
@@ -104,6 +106,7 @@ class TelegramBot:
         admin.message.register(self.on_start, Command("help"))
         admin.message.register(self.on_new, Command("new"))
         admin.message.register(self.on_status, Command("status"))
+        admin.message.register(self.on_pending, Command("pending"))
         admin.message.register(self.on_media, F.photo | F.video | F.animation | F.document)
         admin.message.register(self.on_text, F.text)
         admin.message.register(self.on_unsupported)
@@ -145,7 +148,19 @@ class TelegramBot:
         lines.append("✅ Tasdiqlash tugmalari yoqilgan" if self.settings.require_confirmation else "⚠️ Tasdiqlash o'chirilgan")
         if not self.settings.public_base_url:
             lines.append("⚠️ PUBLIC_BASE_URL sozlanmagan — post joylab bo'lmaydi.")
-        await message.answer("\n".join(lines), link_preview_options=NO_PREVIEW)
+        await self.send_text(message.chat.id, "\n".join(lines))
+
+    async def on_pending(self, message: Message) -> None:
+        """Show the confirmation cards of requests that are still waiting (e.g. if a card got lost)."""
+        pending = [
+            action
+            for action in self.storage.pending_actions(message.chat.id)
+            if utcnow() - action.created_at <= REQUEST_TTL
+        ]
+        if not pending:
+            await message.answer(texts.NO_PENDING)
+        for action in pending:
+            await self.send_action_card(message.chat.id, action.id)
 
     # --- messages and media --------------------------------------------------------------
 
@@ -160,11 +175,11 @@ class TelegramBot:
             try:
                 record = await self._save_media(message)
             except media_utils.MediaError as exc:
-                await message.answer(f"❌ {exc}")
+                await self.send_text(message.chat.id, f"❌ {exc}")
                 return
             except Exception:
                 log.exception("Could not save media")
-                await message.answer(f"❌ {texts.SAVE_FAILED}")
+                await self.send_text(message.chat.id, f"❌ {texts.SAVE_FAILED}")
                 return
             await self.ask_agent(message.chat.id, message.caption or "", [record])
             return
@@ -196,16 +211,21 @@ class TelegramBot:
             return
         chat_id = key[0]
         if album.errors:
-            await self.bot.send_message(chat_id, "❌ " + "\n".join(album.errors))
+            await self.send_text(chat_id, "❌ " + "\n".join(album.errors))
         records = [record for _, record in sorted(album.items, key=lambda item: item[0])]
         if records:
             await self.ask_agent(chat_id, album.caption, records)
 
-    def _spawn(self, coroutine: Any) -> asyncio.Task[Any]:
-        task = asyncio.create_task(coroutine)
+    def _spawn(self, coroutine: Awaitable[Any]) -> asyncio.Task[Any]:
+        task = asyncio.ensure_future(coroutine)
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        task.add_done_callback(self._task_done)
         return task
+
+    def _task_done(self, task: asyncio.Task[Any]) -> None:
+        self._tasks.discard(task)
+        if not task.cancelled() and task.exception() is not None:
+            log.error("Background task failed", exc_info=task.exception())
 
     async def _save_media(self, message: Message) -> MediaRecord:
         """Download an attached photo/video, store it and return its record."""
@@ -230,25 +250,27 @@ class TelegramBot:
         download = self.settings.media_dir / f"{token}.part"
         filename = f"{token}.jpg" if kind == "image" else f"{token}{VIDEO_EXTENSIONS[mime]}"
         target = self.settings.media_dir / filename
-        preview: str | None = f"{token}.jpg"
+        preview_name = f"{token}.jpg"
+        preview: str | None = preview_name
         duration = None
         try:
-            await self.bot.download(source, destination=download)
+            await self.bot.download(source, destination=download, timeout=DOWNLOAD_TIMEOUT)
             if kind == "image":
                 width, height = await asyncio.to_thread(media_utils.normalize_image, download, target)
-                await asyncio.to_thread(media_utils.make_preview, target, self.settings.preview_dir / preview)
+                await asyncio.to_thread(media_utils.make_preview, target, self.settings.preview_dir / preview_name)
             else:
                 download.rename(target)
                 width, height = getattr(source, "width", None), getattr(source, "height", None)
                 duration = getattr(source, "duration", None)
-                preview = await self._video_preview(getattr(source, "thumbnail", None), preview)
+                preview = await self._video_preview(getattr(source, "thumbnail", None), preview_name)
             return self.storage.add_media(message.chat.id, kind, filename, preview, width, height, duration)
         except BaseException as exc:
             target.unlink(missing_ok=True)
-            (self.settings.preview_dir / f"{token}.jpg").unlink(missing_ok=True)
-            if isinstance(exc, TelegramAPIError):
-                log.warning("Download failed: %s", exc)
-                raise media_utils.MediaError(texts.SAVE_FAILED) from exc
+            (self.settings.preview_dir / preview_name).unlink(missing_ok=True)
+            if isinstance(exc, (TelegramAPIError, aiohttp.ClientError, asyncio.TimeoutError, TimeoutError)):
+                # aiohttp's error text contains the file URL, and with it the bot token: log the type only.
+                log.warning("Telegram file download failed: %s", type(exc).__name__)
+                raise media_utils.MediaError(texts.SAVE_FAILED) from None
             raise
         finally:
             download.unlink(missing_ok=True)
@@ -259,11 +281,11 @@ class TelegramBot:
             return None
         download = self.settings.preview_dir / f"{preview}.part"
         try:
-            await self.bot.download(thumbnail, destination=download)
+            await self.bot.download(thumbnail, destination=download, timeout=DOWNLOAD_TIMEOUT)
             await asyncio.to_thread(media_utils.make_preview, download, self.settings.preview_dir / preview)
             return preview
-        except (TelegramAPIError, media_utils.MediaError) as exc:
-            log.warning("No preview for video: %s", exc)
+        except Exception as exc:  # the preview is optional: never lose the video over it
+            log.warning("No preview for video: %s", type(exc).__name__)
             return None
         finally:
             download.unlink(missing_ok=True)
@@ -286,8 +308,15 @@ class TelegramBot:
             return
         except anthropic.APIStatusError as exc:
             log.warning("Claude API error %s: %s", exc.status_code, exc.message)
-            busy = exc.status_code in (500, 502, 503, 529)
-            await self.send_text(chat_id, texts.AI_BUSY if busy else texts.AI_ERROR.format(error=exc.message))
+            if exc.status_code in (400, 413):
+                # Most likely the saved conversation can't be sent any more (too large, too many images):
+                # start a new one, or every following message would fail the same way.
+                await self.agent.reset(chat_id)
+                await self.send_text(chat_id, texts.AI_RESET.format(error=exc.message))
+            elif exc.status_code >= 500:
+                await self.send_text(chat_id, texts.AI_BUSY)
+            else:
+                await self.send_text(chat_id, texts.AI_ERROR.format(error=exc.message))
             return
         except anthropic.APIConnectionError:
             await self.send_text(chat_id, texts.AI_UNREACHABLE)
@@ -302,17 +331,32 @@ class TelegramBot:
         for action_id in reply.action_ids:
             await self.send_action_card(chat_id, action_id)
 
+    async def _deliver(self, send: Callable[[], Awaitable[Any]]) -> bool:
+        """Make one Telegram call, waiting out flood control once. Failures are logged rather than raised, so
+        one lost message doesn't stop the ones after it (for example the confirmation cards)."""
+        for attempt in range(2):
+            try:
+                await send()
+                return True
+            except TelegramRetryAfter as exc:
+                if attempt:
+                    log.warning("Telegram flood control: %s", exc)
+                    return False
+                await asyncio.sleep(exc.retry_after)
+            except TelegramAPIError as exc:
+                log.warning("Telegram request failed: %s", exc)
+                return False
+        return False
+
     async def send_text(self, chat_id: int, text: str) -> None:
         for chunk in split_message(text):
-            await self.bot.send_message(chat_id, chunk, link_preview_options=NO_PREVIEW)
+            await self._deliver(lambda chunk=chunk: self.bot.send_message(chat_id, chunk, link_preview_options=NO_PREVIEW))
 
     async def notify(self, chat_id: int, text: str, note: str) -> None:
-        """Report something that happened in the background to the admin and to the agent."""
-        try:
-            await self.send_text(chat_id, text)
-        except TelegramAPIError as exc:
-            log.warning("Could not notify chat %s: %s", chat_id, exc)
-        await self.agent.add_note(chat_id, note)
+        """Report something that happened in the background to the admin and to the agent. The note is added in
+        the background: it waits for any agent turn in progress, and the caller (the scheduler) shouldn't."""
+        await self.send_text(chat_id, text)
+        self._spawn(self.agent.add_note(chat_id, note))
 
     async def report_interrupted(self) -> None:
         """After a restart: tell admins about work that was cut off mid-way."""
@@ -337,11 +381,11 @@ class TelegramBot:
             return
         if action.kind in ("publish", "schedule"):
             await self._send_preview(chat_id, PostSpec.from_dict(action.payload["spec"]))
-        await self.bot.send_message(
-            chat_id,
-            self.actions.describe(action),
-            reply_markup=confirm_keyboard(action_id),
-            link_preview_options=NO_PREVIEW,
+        card = self.actions.describe(action)
+        await self._deliver(
+            lambda: self.bot.send_message(
+                chat_id, card, reply_markup=confirm_keyboard(action_id), link_preview_options=NO_PREVIEW
+            )
         )
 
     async def _send_preview(self, chat_id: int, spec: PostSpec) -> None:
@@ -350,20 +394,13 @@ class TelegramBot:
             record = self.storage.get_media(media_id)
             if record is not None:
                 files.append((record.kind, FSInputFile(self.settings.media_dir / record.filename)))
-        try:
-            if len(files) == 1:
-                kind, file = files[0]
-                if kind == "image":
-                    await self.bot.send_photo(chat_id, file)
-                else:
-                    await self.bot.send_video(chat_id, file)
-            elif files:
-                await self.bot.send_media_group(
-                    chat_id,
-                    [InputMediaPhoto(media=file) if kind == "image" else InputMediaVideo(media=file) for kind, file in files],
-                )
-        except TelegramAPIError as exc:
-            log.warning("Could not send post preview: %s", exc)
+        if len(files) == 1:
+            kind, file = files[0]
+            send_one = self.bot.send_photo if kind == "image" else self.bot.send_video
+            await self._deliver(lambda: send_one(chat_id, file))
+        elif files:
+            group = [InputMediaPhoto(media=file) if kind == "image" else InputMediaVideo(media=file) for kind, file in files]
+            await self._deliver(lambda: self.bot.send_media_group(chat_id, group))
 
     async def on_button(self, callback: CallbackQuery) -> None:
         try:
@@ -374,11 +411,8 @@ class TelegramBot:
             return
         action = self.storage.get_action(action_id)
         chat_id = callback.message.chat.id if callback.message else None
-        if action is None or action.chat_id != chat_id:
+        if action is None or chat_id is None or action.chat_id != chat_id:
             await callback.answer(texts.NOT_FOUND, show_alert=True)
-            return
-        if action.status != "pending":
-            await callback.answer(texts.ALREADY_HANDLED, show_alert=True)
             return
         message_id = callback.message.message_id
         card = self.actions.describe(action)
@@ -392,26 +426,29 @@ class TelegramBot:
             await self.agent.add_note(chat_id, f"The admin declined request #{action_id}; nothing changed on Instagram.")
             return
 
+        refused = self.actions.claim(action_id)  # no await before this, so a second tap can't also claim it
+        if refused is not None:
+            await callback.answer(refused.message, show_alert=True)
+            if refused.status == "expired":
+                await self._edit_card(chat_id, message_id, f"{card}\n\n⌛ {refused.message}")
+            return
         await callback.answer(texts.RUNNING)
         await self._edit_card(chat_id, message_id, f"{card}\n\n{texts.RUNNING}")
-        outcome = await self.actions.run(action_id)
-        if outcome.status == "stale":  # a second tap raced the first one, which reports the result
-            return
-        mark = {"done": "✅", "expired": "⌛"}.get(outcome.status, "❌")
-        await self._edit_card(chat_id, message_id, f"{card}\n\n{mark} {outcome.message}")
-        state = {"done": "was approved and done", "expired": "had expired and was not carried out"}.get(
-            outcome.status, "was approved but failed"
-        )
+        outcome = await self.actions.execute(action)
+        await self._edit_card(chat_id, message_id, f"{card}\n\n{'✅' if outcome.ok else '❌'} {outcome.message}")
+        state = "was approved and done" if outcome.ok else "was approved but failed"
         await self.agent.add_note(chat_id, f"Request #{action_id} {state}: {outcome.message}")
 
     async def _edit_card(self, chat_id: int, message_id: int, text: str) -> None:
-        try:
-            await self.bot.edit_message_text(
-                text=text[:MESSAGE_LIMIT], chat_id=chat_id, message_id=message_id, reply_markup=None,
+        await self._deliver(
+            lambda: self.bot.edit_message_text(
+                text=text[:MESSAGE_LIMIT],
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=None,
                 link_preview_options=NO_PREVIEW,
             )
-        except TelegramAPIError as exc:
-            log.warning("Could not update confirmation card: %s", exc)
+        )
 
     # --- everyone else -------------------------------------------------------------------
 

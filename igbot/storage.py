@@ -163,6 +163,13 @@ class Storage:
     def delete_media(self, media_id: int) -> None:
         self._execute("DELETE FROM media WHERE id = ?", (media_id,))
 
+    def media_filenames(self) -> set[str]:
+        """Every file name (media and preview) that belongs to a stored upload."""
+        names: set[str] = set()
+        for row in self._conn.execute("SELECT filename, preview_filename FROM media"):
+            names.update(name for name in (row["filename"], row["preview_filename"]) if name)
+        return names
+
     def media_ids_in_use(self) -> set[int]:
         """Media that a scheduled post or a pending publish request still needs."""
         specs = [
@@ -230,6 +237,19 @@ class Storage:
             (new, result, to_iso(utcnow()), action_id, old),
         )
         return cursor.rowcount == 1
+
+    def pending_actions(self, chat_id: int) -> list[ActionRecord]:
+        rows = self._conn.execute(
+            "SELECT * FROM actions WHERE chat_id = ? AND status = 'pending' ORDER BY id", (chat_id,)
+        ).fetchall()
+        return [_action(row) for row in rows]
+
+    def expire_pending_actions(self, created_before: datetime) -> int:
+        cursor = self._execute(
+            "UPDATE actions SET status = 'expired', updated_at = ? WHERE status = 'pending' AND created_at < ?",
+            (to_iso(utcnow()), to_iso(created_before)),
+        )
+        return cursor.rowcount
 
     def fail_interrupted_actions(self) -> list[ActionRecord]:
         """Requests that were running when the process stopped; their outcome on Instagram is unknown."""

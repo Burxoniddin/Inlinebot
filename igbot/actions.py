@@ -177,6 +177,13 @@ class ActionService:
         elif action.kind == "set_comments":
             title = "izohlarni yoqish" if payload["enabled"] else "izohlarni o'chirib qo'yish"
             lines = [f"💬 So'rov #{action.id}: {title}", f"Post: {payload.get('permalink') or payload['media_id']}"]
+        elif action.kind == "cancel_schedule":
+            when = datetime.fromisoformat(payload["publish_at"])
+            lines = [
+                f"🗓 So'rov #{action.id}: rejani bekor qilish",
+                f"Reja #{payload['schedule_id']} — {self.local_time(when)}",
+                "Caption: " + (payload.get("caption") or "(bo'sh)"),
+            ]
         else:
             lines = [f"So'rov #{action.id}: {action.kind}"]
         return "\n".join(lines)
@@ -197,28 +204,39 @@ class ActionService:
 
     async def run(self, action_id: int) -> Outcome:
         """Carry out a pending request exactly once."""
+        refused = self.claim(action_id)
+        if refused is not None:
+            return refused
         action = self.storage.get_action(action_id)
-        if action is None or action.status != "pending":
-            return Outcome("stale", "Bu so'rov allaqachon ko'rib chiqilgan.")
-        if utcnow() - action.created_at > REQUEST_TTL:
+        assert action is not None
+        return await self.execute(action)
+
+    def claim(self, action_id: int) -> Outcome | None:
+        """Reserve a pending request for execution. Returns None if it is now ours to run, otherwise why not.
+        It doesn't await, so two button taps can't both get the request."""
+        action = self.storage.get_action(action_id)
+        if action is not None and action.status == "pending" and utcnow() - action.created_at > REQUEST_TTL:
             if self.storage.set_action_status(action_id, "pending", "expired"):
                 return Outcome("expired", "So'rov eskirgan (24 soatdan ko'p vaqt o'tgan) — qaytadan so'rang.")
+        if action is None or not self.storage.set_action_status(action_id, "pending", "running"):
             return Outcome("stale", "Bu so'rov allaqachon ko'rib chiqilgan.")
-        if not self.storage.set_action_status(action_id, "pending", "running"):
-            return Outcome("stale", "Bu so'rov allaqachon ko'rib chiqilgan.")
+        return None
+
+    async def execute(self, action: ActionRecord) -> Outcome:
+        """Carry out a request reserved with `claim`."""
         try:
-            message = await self._execute(action)
+            message = await self._carry_out(action)
         except (ActionError, ConfigError, InstagramError, media_utils.MediaError) as exc:
-            self.storage.set_action_status(action_id, "running", "failed", str(exc))
+            self.storage.set_action_status(action.id, "running", "failed", str(exc))
             return Outcome("failed", str(exc))
         except Exception as exc:
-            log.exception("Request #%s failed", action_id)
-            self.storage.set_action_status(action_id, "running", "failed", f"Kutilmagan xato: {exc}")
+            log.exception("Request #%s failed", action.id)
+            self.storage.set_action_status(action.id, "running", "failed", f"Kutilmagan xato: {exc}")
             return Outcome("failed", f"Kutilmagan xato: {exc}")
-        self.storage.set_action_status(action_id, "running", "done", message)
+        self.storage.set_action_status(action.id, "running", "done", message)
         return Outcome("done", message)
 
-    async def _execute(self, action: ActionRecord) -> str:
+    async def _carry_out(self, action: ActionRecord) -> str:
         payload = action.payload
         if action.kind == "publish":
             media_id, permalink = await self.publish(PostSpec.from_dict(payload["spec"]))
@@ -231,6 +249,10 @@ class ActionService:
                 raise ActionError("Rejalashtirilgan vaqt o'tib ketdi — yangi vaqt bilan qayta so'rang.")
             post = self.storage.add_scheduled_post(action.chat_id, spec.to_dict(), moment)
             return f"Post {self.local_time(moment)} ga rejalashtirildi (reja #{post.id})."
+        if action.kind == "cancel_schedule":
+            if not self.storage.cancel_scheduled_post(payload["schedule_id"]):
+                raise ActionError(f"Reja #{payload['schedule_id']} allaqachon joylangan yoki bekor qilingan.")
+            return f"Reja #{payload['schedule_id']} bekor qilindi."
         if action.kind == "delete_post":
             await self.ig.delete_media(payload["media_id"])
             return "Post Instagramdan o'chirildi."

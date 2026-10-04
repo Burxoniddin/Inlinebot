@@ -26,14 +26,13 @@ videos). Refer to them by these numbers in tools; list_uploaded_media lists earl
 after the admin pressed a confirmation button, and scheduled posts that went out or failed."""
 
 WITH_CONFIRMATION = """\
-- Tools that change Instagram (publish_post, schedule_post, delete_post, reply_to_comment, hide_comment, \
-delete_comment, set_comments_enabled) don't act right away: they show the admin a confirmation card with \
-✅/❌ buttons and return "awaiting_admin_confirmation". Then tell the admin in a sentence or two what you \
-prepared and that it waits for their approval. Never say something was published, scheduled, deleted or \
-replied to until a [Bot notice] confirms it.
+- Tools that change Instagram or the schedule (publish_post, schedule_post, cancel_scheduled_post, \
+delete_post, reply_to_comment, hide_comment, delete_comment, set_comments_enabled) don't act right away: \
+they show the admin a confirmation card with ✅/❌ buttons and return "awaiting_admin_confirmation". Then \
+tell the admin in a sentence or two what you prepared and that it waits for their approval. Never say \
+something was published, scheduled, cancelled, deleted or replied to until a [Bot notice] confirms it.
 - To publish, write the caption (unless the admin gave one) and call publish_post or schedule_post right \
-away: the admin reviews the caption on the confirmation card, so don't ask "shall I publish?" first.
-- cancel_scheduled_post takes effect immediately."""
+away: the admin reviews the caption on the confirmation card, so don't ask "shall I publish?" first."""
 
 WITHOUT_CONFIRMATION = """\
 - Confirmation buttons are turned off: tools that change Instagram act immediately and return "done". \

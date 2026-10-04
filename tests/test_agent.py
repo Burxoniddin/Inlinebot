@@ -7,7 +7,16 @@ from datetime import timedelta
 import pytest
 
 from igbot.actions import ActionService
-from igbot.agent import LOCAL_IMAGE, TOO_LONG_NOTICE, Agent, AgentRefusal, assistant_content, build_user_content
+from igbot.agent import (
+    CUT_OFF,
+    LOCAL_IMAGE,
+    MAX_CONVERSATION_IMAGES,
+    TOO_LONG_NOTICE,
+    Agent,
+    AgentRefusal,
+    assistant_content,
+    build_user_content,
+)
 from igbot.storage import Storage, utcnow
 from igbot.tools import TOOLS, ToolBox
 
@@ -184,6 +193,40 @@ async def test_new_conversation_when_idle_too_long_or_changed(settings, make_set
     other = make_agent(make_settings(BRAND_GUIDE="Kofe do'koni"), storage, ig, claude)  # different system prompt
     await other.respond(CHAT, user("5"))
     assert len(claude.requests[4]["messages"]) == 1
+
+
+async def test_new_conversation_after_many_photos(settings, storage, ig, add_media) -> None:
+    claude = FakeClaude(*[claude_message([text("ok")]) for _ in range(2)])
+    agent = make_agent(settings, storage, ig, claude)
+    photos = [add_media("image") for _ in range(MAX_CONVERSATION_IMAGES)]
+    await agent.respond(CHAT, user("", photos))
+    reply = await agent.respond(CHAT, user("Yana bitta"))
+    assert reply.notice == TOO_LONG_NOTICE
+    assert len(claude.requests[1]["messages"]) == 1
+
+
+async def test_cut_off_reply_is_not_reported_as_success(settings, storage, ig) -> None:
+    claude = FakeClaude(
+        claude_message([THINKING], "max_tokens"),
+        claude_message([THINKING, text("Mana caption: ...")], "max_tokens"),
+    )
+    agent = make_agent(settings, storage, ig, claude)
+    assert (await agent.respond(CHAT, user("Uzun reja yoz"))).text == CUT_OFF
+    assert (await agent.respond(CHAT, user("Qisqaroq"))).text == f"Mana caption: ...\n\n({CUT_OFF})"
+
+
+async def test_notes_keep_a_long_conversation_until_the_admin_writes(settings, storage, ig) -> None:
+    claude = FakeClaude(claude_message([text("Salom!")]), claude_message([text("Yangi suhbat")]))
+    agent = make_agent(settings, storage, ig, claude)
+    await agent.respond(CHAT, user("Salom"))
+    conversation = storage.get_conversation(CHAT)
+    conversation.context_tokens = 10**6
+    storage.save_conversation(conversation)
+
+    await agent.add_note(CHAT, "Scheduled post #1 was published")
+    assert len(storage.get_conversation(CHAT).messages) == 3
+    reply = await agent.respond(CHAT, user("Nima gap?"))
+    assert reply.notice == TOO_LONG_NOTICE
 
 
 async def test_notes_are_appended(settings, storage, ig) -> None:

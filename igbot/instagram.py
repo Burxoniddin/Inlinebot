@@ -114,8 +114,9 @@ class InstagramClient:
                     payload = await response.json(content_type=None)
                 except ValueError:
                     payload = None
-        except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
-            raise InstagramError(f"Instagram API ga ulanib bo'lmadi: {exc}") from exc
+        except (aiohttp.ClientError, asyncio.TimeoutError, TimeoutError) as exc:
+            # Only the error type: aiohttp messages can contain the request URL, and GET URLs carry the token.
+            raise InstagramError(f"Instagram API ga ulanib bo'lmadi ({type(exc).__name__}).") from None
         if not isinstance(payload, dict):
             payload = {}
         if status >= 400 or "error" in payload:

@@ -61,16 +61,24 @@ def clamp_feed_ratio(ratio: float) -> float:
 
 
 def fit_to_ratio(image: Image.Image, ratio: float) -> Image.Image:
-    """Pad an image to width/height == ratio without cropping it: the original sits in the middle of
-    a blurred, enlarged copy of itself. Returns the image unchanged if it is already close enough."""
+    """Pad an image to about width/height == ratio without cropping it: the original sits in the middle
+    of a blurred, enlarged copy of itself. The result is always within Instagram's feed limits. An image
+    that is already within the limits and within 1% of the ratio is returned unchanged."""
     width, height = image.size
-    if abs(width / height - ratio) / ratio < 0.01:
+    current = width / height
+    if FEED_MIN_RATIO <= current <= FEED_MAX_RATIO and abs(current - ratio) / ratio < 0.01:
         return image
-    if width / height < ratio:  # too tall: widen the canvas
-        canvas_size = (round(height * ratio), height)
+    if current < ratio:  # too tall: widen the canvas
+        canvas_width, canvas_height = max(width, round(height * ratio)), height
     else:  # too wide: make the canvas taller
-        canvas_size = (width, round(width / ratio))
-    scale = max(canvas_size[0] / width, canvas_size[1] / height)
+        canvas_width, canvas_height = width, max(height, round(width / ratio))
+    # Rounding can land a hair outside the limits (1638x2048 is 0.7998), which Instagram rejects.
+    while canvas_width / canvas_height < FEED_MIN_RATIO:
+        canvas_width += 1
+    while canvas_width / canvas_height > FEED_MAX_RATIO:
+        canvas_height += 1
+    canvas_size = (canvas_width, canvas_height)
+    scale = max(canvas_width / width, canvas_height / height)
     background = image.resize((round(width * scale), round(height * scale)), Image.Resampling.LANCZOS)
     left = (background.width - canvas_size[0]) // 2
     top = (background.height - canvas_size[1]) // 2

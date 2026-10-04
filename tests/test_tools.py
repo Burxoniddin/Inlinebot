@@ -94,10 +94,16 @@ async def test_delete_post_shows_which_post(settings, storage, ig) -> None:
     assert action.payload["permalink"] == "https://www.instagram.com/p/old/" and action.payload["caption"] == "Eski aksiya"
 
 
-async def test_cancel_scheduled_post(settings, storage, ig) -> None:
-    post = storage.add_scheduled_post(CHAT, {"post_type": "feed", "media_ids": [1], "caption": ""}, utcnow())
+async def test_cancel_scheduled_post_needs_confirmation(settings, storage, ig) -> None:
+    post = storage.add_scheduled_post(CHAT, {"post_type": "feed", "media_ids": [1], "caption": "Aksiya"}, utcnow())
     box = toolbox(settings, storage, ig)
-    assert json.loads((await box.run(CHAT, "cancel_scheduled_post", {"schedule_id": post.id}, [])).content)["status"] == "cancelled"
+    created: list[int] = []
+    result = await box.run(CHAT, "cancel_scheduled_post", {"schedule_id": post.id}, created)
+    assert json.loads(result.content)["status"] == "awaiting_admin_confirmation"
+    assert storage.get_scheduled_post(post.id).status == "scheduled"  # nothing changes before the button
+
+    outcome = await box.actions.run(created[0])
+    assert outcome.ok and storage.get_scheduled_post(post.id).status == "cancelled"
     again = await box.run(CHAT, "cancel_scheduled_post", {"schedule_id": post.id}, [])
     assert again.is_error
 
