@@ -1,0 +1,9 @@
+[project]
+name = "igbot"
+version = "0.1.0"
+description = "AI content manager for an Instagram professional account, controlled from a Telegram bot"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

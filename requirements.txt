@@ -1,31 +1,6 @@
-pytz
-requests
-python-dotenv
-ipython
-
-# Django
-django
-django-timezone-field 
-django-cors-headers
-django-debug-toolbar
-whitenoise
-
-# Django 3.0 async requirements
-gunicorn
-uvicorn
-httptools
-
-# Databases
-psycopg2-binary
-dj-database-url
-
-# Distributed tasks
-celery
-redis
-django-celery-beat
-
-# Telegram
-python-telegram-bot==13.13
-
-# monitoring
-# sentry-sdk
+aiogram==3.31.0
+aiohttp==3.14.3
+anthropic==1.11.0
+Pillow==12.3.0
+python-dotenv==1.2.4
+tzdata
